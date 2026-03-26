@@ -9,6 +9,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Shield, MessageSquareText, Handshake, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { WaitlistForm } from "@/components/WaitlistForm";
 
 const features = [
   {
@@ -110,12 +111,23 @@ export default function HomePage() {
             AI spots risky clauses, explains them in plain English, and suggests
             fixes. No lawyer required.
           </p>
-          <Link
-            href="/analyze"
-            className={cn(buttonVariants({ size: "lg" }), "text-base px-8")}
-          >
-            Analyze My Contract Free
-          </Link>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            <Link
+              href="/analyze"
+              className={cn(buttonVariants({ size: "lg" }), "text-base px-8")}
+            >
+              Analyze My Contract Free
+            </Link>
+            <a
+              href="#waitlist"
+              className={cn(
+                buttonVariants({ size: "lg", variant: "outline" }),
+                "text-base px-8"
+              )}
+            >
+              Join the Waitlist
+            </a>
+          </div>
         </div>
       </section>
 
@@ -202,6 +214,26 @@ export default function HomePage() {
               </Card>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Waitlist */}
+      <section id="waitlist" className="py-20 px-4 bg-blue-600">
+        <div className="max-w-2xl mx-auto text-center">
+          <Badge variant="secondary" className="mb-4 bg-blue-500 text-white hover:bg-blue-500">
+            Early Access
+          </Badge>
+          <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">
+            Be first in line
+          </h2>
+          <p className="text-blue-100 text-lg mb-8">
+            We&apos;re in private beta. Join the waitlist and get early access
+            + <strong className="text-white">3 months free on Starter</strong> when we launch.
+          </p>
+          <WaitlistForm source="landing-bottom" />
+          <p className="text-blue-200 text-xs mt-4">
+            No spam. Unsubscribe anytime. We only email about launch updates.
+          </p>
         </div>
       </section>
 
