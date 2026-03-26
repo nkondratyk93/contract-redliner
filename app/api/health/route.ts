@@ -31,16 +31,27 @@ async function checkAnthropicKey(): Promise<CheckStatus> {
     return anthropicCache.status;
   }
 
-  // Probe with a minimal API call — models.list is cheap and doesn't generate tokens
+  // Probe with a real inference call — only way to confirm the key works for messages.create
+  // Use 1 max_token to minimize cost (fractions of a cent)
   let status: CheckStatus;
   try {
-    await anthropic.models.list();
+    await anthropic.messages.create({
+      model: "claude-3-5-haiku-20241022",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    });
     status = "ok";
   } catch (err: unknown) {
     const httpStatus = (err as { status?: number })?.status;
-    // 401 = invalid key, 403 = no access; anything else (429, 5xx) = key present but API issue
-    status = httpStatus === 401 || httpStatus === 403 ? "error" : "ok";
-    console.warn("[health] Anthropic probe failed:", httpStatus, (err as Error).message);
+    // 401/403 = invalid key or no access; 429 = rate limited (key works); 5xx = Anthropic down
+    if (httpStatus === 401 || httpStatus === 403) {
+      status = "error";
+    } else if (httpStatus === 429) {
+      status = "ok"; // rate limited means key is valid
+    } else {
+      status = "error"; // treat other failures conservatively
+    }
+    console.warn("[health] Anthropic probe status:", httpStatus, (err as Error).message);
   }
 
   anthropicCache = { status, expiresAt: Date.now() + CACHE_TTL_MS };
