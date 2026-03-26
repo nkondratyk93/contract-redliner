@@ -122,7 +122,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let rawText: string;
   try {
     const message = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-3-5-haiku-20241022",
       max_tokens: 4096,
       messages: [
         {
@@ -132,11 +132,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ],
     });
     rawText = message.content[0].type === "text" ? message.content[0].text.trim() : "";
-  } catch (err) {
-    console.error("[analyze] Anthropic error:", err);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const errStatus = (err as { status?: number })?.status;
+    console.error("[analyze] Anthropic error:", errMsg);
+
+    // Surface the real error in non-production for debugging
+    const isDev = process.env.NODE_ENV === "development";
     return NextResponse.json(
-      { error: "AI analysis service unavailable. Please try again in a moment.", disclaimer: DISCLAIMER },
-      { status: 503, headers: rlHeaders }
+      {
+        error: "AI analysis service unavailable. Please try again in a moment.",
+        ...(isDev && { debug: errMsg }),
+        disclaimer: DISCLAIMER,
+      },
+      { status: errStatus === 401 ? 503 : errStatus ?? 503, headers: rlHeaders }
     );
   }
 
