@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { supabaseServer } from "@/lib/supabase-server";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   let body: unknown;
@@ -29,7 +24,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const { error } = await supabase
+  const { error } = await supabaseServer
     .from("contract_redliner_waitlist")
     .insert({ email: trimmed, source: source ?? "landing" });
 

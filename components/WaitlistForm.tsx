@@ -53,36 +53,38 @@ export function WaitlistForm({ source = "landing" }: { source?: string }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 w-full max-w-md mx-auto">
-      <Input
-        type="email"
-        placeholder="you@example.com"
-        value={email}
-        onChange={(e) => {
-          setEmail(e.target.value);
-          if (status === "error") setStatus("idle");
-        }}
-        required
-        disabled={status === "loading"}
-        className="flex-1 h-11 bg-white"
-        aria-label="Email address"
-      />
-      <Button
-        type="submit"
-        disabled={status === "loading" || !email.trim()}
-        className="h-11 px-6 whitespace-nowrap"
-      >
-        {status === "loading" ? (
-          <>
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            Joining...
-          </>
-        ) : (
-          "Join Waitlist"
-        )}
-      </Button>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3 w-full max-w-md mx-auto">
+      <div className="flex flex-col sm:flex-row gap-3">
+        <Input
+          type="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            if (status === "error") setStatus("idle");
+          }}
+          required
+          disabled={status === "loading"}
+          className="flex-1 h-11 bg-white"
+          aria-label="Email address"
+        />
+        <Button
+          type="submit"
+          disabled={status === "loading" || !email.trim()}
+          className="h-11 px-6 whitespace-nowrap"
+        >
+          {status === "loading" ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Joining...
+            </>
+          ) : (
+            "Join Waitlist"
+          )}
+        </Button>
+      </div>
       {status === "error" && (
-        <div className="flex items-center gap-1.5 text-red-600 text-sm sm:col-span-2 w-full">
+        <div className="flex items-center gap-1.5 text-red-600 text-sm w-full">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{message}</span>
         </div>
