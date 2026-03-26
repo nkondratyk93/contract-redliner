@@ -47,22 +47,13 @@ export default function AnalyzePage() {
   async function handleSubmit() {
     setError(null);
 
-    let contractText = text;
-
     if (mode === "upload") {
       if (!file) {
         setError("Please upload a file first.");
         return;
       }
-      contractText = await file.text();
-      if (!contractText.trim()) {
-        setError(
-          "Could not extract text from this file. Try pasting the contract text instead."
-        );
-        return;
-      }
     } else {
-      if (!contractText.trim()) {
+      if (!text.trim()) {
         setError("Please paste your contract text.");
         return;
       }
@@ -71,14 +62,23 @@ export default function AnalyzePage() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: contractText,
-          filename: file?.name,
-        }),
-      });
+      let res: Response;
+
+      if (mode === "upload" && file) {
+        // Send as multipart — server handles PDF text extraction via pdf-parse
+        const formData = new FormData();
+        formData.append("file", file);
+        res = await fetch("/api/analyze", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      }
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -155,6 +155,21 @@ export default function AnalyzePage() {
             </CardHeader>
             <CardContent>
               {mode === "upload" ? (
+                <>
+                  <div className="flex items-start gap-2 mb-4 rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                    <p>
+                      <strong>PDF tip:</strong> Works best with text-based PDFs.
+                      If your analysis looks incorrect, try the{" "}
+                      <button
+                        onClick={() => setMode("paste")}
+                        className="underline font-medium hover:text-amber-900"
+                      >
+                        Paste Text
+                      </button>{" "}
+                      tab instead.
+                    </p>
+                  </div>
                 <div
                   {...getRootProps()}
                   className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors ${
@@ -188,6 +203,7 @@ export default function AnalyzePage() {
                     </div>
                   )}
                 </div>
+                </>
               ) : (
                 <Textarea
                   value={text}
