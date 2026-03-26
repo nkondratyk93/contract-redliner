@@ -1,14 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+
+interface UtmParams {
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_content?: string;
+  referrer?: string;
+}
+
+function readUtmParams(): UtmParams {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  return {
+    utm_source: params.get("utm_source") ?? undefined,
+    utm_medium: params.get("utm_medium") ?? undefined,
+    utm_campaign: params.get("utm_campaign") ?? undefined,
+    utm_content: params.get("utm_content") ?? undefined,
+    referrer: document.referrer || undefined,
+  };
+}
 
 export function WaitlistForm({ source = "landing" }: { source?: string }) {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [utmParams, setUtmParams] = useState<UtmParams>({});
+
+  // Read UTM params once on mount (client-side only)
+  useEffect(() => {
+    setUtmParams(readUtmParams());
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -21,7 +47,11 @@ export function WaitlistForm({ source = "landing" }: { source?: string }) {
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), source }),
+        body: JSON.stringify({
+          email: email.trim(),
+          source,
+          ...utmParams,
+        }),
       });
 
       const data = await res.json();

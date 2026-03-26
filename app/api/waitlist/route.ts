@@ -9,7 +9,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
 
-  const { email, source } = body as { email?: string; source?: string };
+  const {
+    email,
+    source,
+    utm_source,
+    utm_medium,
+    utm_campaign,
+    utm_content,
+    referrer,
+  } = body as {
+    email?: string;
+    source?: string;
+    utm_source?: string;
+    utm_medium?: string;
+    utm_campaign?: string;
+    utm_content?: string;
+    referrer?: string;
+  };
 
   if (!email || typeof email !== "string") {
     return NextResponse.json({ error: "Email is required." }, { status: 400 });
@@ -24,9 +40,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  // Build insert payload — only include UTM fields if present (keep rows clean)
+  const insertPayload: Record<string, string> = {
+    email: trimmed,
+    source: source ?? "landing",
+  };
+  if (utm_source) insertPayload.utm_source = utm_source;
+  if (utm_medium) insertPayload.utm_medium = utm_medium;
+  if (utm_campaign) insertPayload.utm_campaign = utm_campaign;
+  if (utm_content) insertPayload.utm_content = utm_content;
+  if (referrer) insertPayload.referrer = referrer;
+
   const { error } = await supabaseServer
     .from("contract_redliner_waitlist")
-    .insert({ email: trimmed, source: source ?? "landing" });
+    .insert(insertPayload);
 
   if (error) {
     // Unique violation = already signed up
