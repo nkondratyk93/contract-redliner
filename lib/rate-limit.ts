@@ -1,6 +1,7 @@
 /**
  * Simple in-memory rate limiter.
- * Free tier: 3 analyses per IP per 24 hours.
+ * Free tier: 3 analyses per IP per 24 hours (aligned with PM spec for MVP usability).
+ * Note: only counts VALID requests that pass Zod validation — bad input never burns a slot.
  * Resets on each Vercel cold start — acceptable for MVP.
  */
 

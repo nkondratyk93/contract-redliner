@@ -4,19 +4,20 @@
  * Body: { text: string, filename?: string }
  *
  * Response: {
- *   analysisId: string,          // UUID — use to retrieve via GET /api/analysis/:id
+ *   analysisId: string,          // UUID — retrieve via GET /api/analysis/:id
  *   analysis: ContractAnalysis,
  *   disclaimer: string,
- *   cached?: boolean
+ *   cached?: boolean             // true when returning a deduped result
  * }
  *
  * Rate limit: 3 analyses / IP / 24 h (free tier).
- * All responses include a "Not legal advice" disclaimer.
+ * Rate limit is ONLY consumed after successful input validation — bad requests
+ * (too short, invalid JSON) do not burn a slot.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { anthropic } from "@/lib/anthropic";
-import { supabase } from "@/lib/supabase";
+import { supabaseServer } from "@/lib/supabase-server";
 import { AnalyzeBodySchema, ContractAnalysisSchema } from "@/lib/schemas";
 import type { ContractAnalysis } from "@/lib/schemas";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
@@ -39,7 +40,7 @@ Return ONLY a raw JSON object — no markdown, no code fences, no commentary —
   "flaggedClauses": [
     {
       "id": "clause-1",
-      "type": "<category: IP Ownership | Non-Compete | Unlimited Revisions | Payment Terms | Termination | Liability | Exclusivity | Confidentiality | Indemnification | Governing Law | Other>",
+      "type": "<IP Ownership | Non-Compete | Unlimited Revisions | Payment Terms | Termination | Liability | Exclusivity | Confidentiality | Indemnification | Governing Law | Other>",
       "riskLevel": "HIGH" | "MEDIUM" | "LOW",
       "originalText": "<exact verbatim text from the contract>",
       "explanation": "<plain English: why is this risky or unfair>",
@@ -49,59 +50,73 @@ Return ONLY a raw JSON object — no markdown, no code fences, no commentary —
 }
 
 Focus on: IP ownership, non-compete, unlimited revisions, late payment, liability caps,
-termination clauses, exclusivity, confidentiality overreach, indemnification, auto-renewal.
-Return an empty flaggedClauses array if the contract is balanced/low-risk.`;
+termination, exclusivity, confidentiality overreach, indemnification, auto-renewal.
+Return empty flaggedClauses array if the contract is balanced/low-risk.`;
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // ── Rate limit ─────────────────────────────────────────────────────────────
   const ip = getClientIp(request);
-  const rl = checkRateLimit(ip);
 
-  const rlHeaders = {
-    "X-RateLimit-Limit": String(3),
-    "X-RateLimit-Remaining": String(rl.remaining),
-    "X-RateLimit-Reset": String(Math.floor(rl.resetAt / 1000)),
-  };
-
-  if (!rl.allowed) {
-    const resetDate = new Date(rl.resetAt).toLocaleString("en-US", {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    });
-    return NextResponse.json(
-      {
-        error: `Free tier limit reached (3 analyses per 24 hours). Resets at ${resetDate}.`,
-        resetAt: rl.resetAt,
-        disclaimer: DISCLAIMER,
-      },
-      { status: 429, headers: { ...rlHeaders, "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
-    );
-  }
-
-  // ── Parse + validate input ─────────────────────────────────────────────────
+  // ── 1. Parse body ──────────────────────────────────────────────────────────
   let body: unknown;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON body.", disclaimer: DISCLAIMER },
-      { status: 400, headers: rlHeaders }
+      { status: 400 }
     );
   }
 
+  // ── 2. Validate input — BEFORE consuming a rate limit slot ─────────────────
   const parsed = AnalyzeBodySchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid input.", disclaimer: DISCLAIMER },
-      { status: 400, headers: rlHeaders }
+      {
+        error: parsed.error.issues[0]?.message ?? "Invalid input.",
+        disclaimer: DISCLAIMER,
+      },
+      { status: 400 }
     );
   }
 
   const { text, filename } = parsed.data;
+
+  // ── 3. Rate limit — only after validation passes ───────────────────────────
+  const rl = checkRateLimit(ip);
+  const rlHeaders = {
+    "X-RateLimit-Limit": "3",
+    "X-RateLimit-Remaining": String(rl.remaining),
+    "X-RateLimit-Reset": String(Math.floor(rl.resetAt / 1000)),
+  };
+
+  if (!rl.allowed) {
+    const resetDate = new Date(rl.resetAt).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return NextResponse.json(
+      {
+        error: `Free tier limit reached (3 analyses per 24 hours). Your limit resets at ${resetDate}.`,
+        resetAt: rl.resetAt,
+        disclaimer: DISCLAIMER,
+      },
+      {
+        status: 429,
+        headers: {
+          ...rlHeaders,
+          "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)),
+        },
+      }
+    );
+  }
+
   const textHash = crypto.createHash("sha256").update(text).digest("hex");
 
-  // ── Dedup: return cached result for identical contract text ────────────────
+  // ── 4. Dedup: return cached result for identical contract text ─────────────
   try {
-    const { data: cached } = await supabase
+    const { data: cached } = await supabaseServer
       .from("contract_redliner_analyses")
       .select("id, analysis_json")
       .eq("text_hash", textHash)
@@ -110,7 +125,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     if (cached) {
       return NextResponse.json(
-        { analysisId: cached.id, analysis: cached.analysis_json, disclaimer: DISCLAIMER, cached: true },
+        {
+          analysisId: cached.id,
+          analysis: cached.analysis_json,
+          disclaimer: DISCLAIMER,
+          cached: true,
+        },
         { headers: rlHeaders }
       );
     }
@@ -118,7 +138,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // Cache miss — proceed to AI
   }
 
-  // ── AI analysis ────────────────────────────────────────────────────────────
+  // ── 5. AI analysis ─────────────────────────────────────────────────────────
   let rawText: string;
   try {
     const message = await anthropic.messages.create({
@@ -131,50 +151,53 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         },
       ],
     });
-    rawText = message.content[0].type === "text" ? message.content[0].text.trim() : "";
+    rawText =
+      message.content[0].type === "text"
+        ? message.content[0].text.trim()
+        : "";
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    const errStatus = (err as { status?: number })?.status;
     console.error("[analyze] Anthropic error:", errMsg);
-
-    // Surface the real error in non-production for debugging
-    const isDev = process.env.NODE_ENV === "development";
     return NextResponse.json(
       {
-        error: "AI analysis service unavailable. Please try again in a moment.",
-        ...(isDev && { debug: errMsg }),
+        error:
+          "AI analysis service unavailable. Please try again in a moment.",
         disclaimer: DISCLAIMER,
       },
-      { status: errStatus === 401 ? 503 : errStatus ?? 503, headers: rlHeaders }
+      { status: 503, headers: rlHeaders }
     );
   }
 
-  // ── Validate AI response shape ─────────────────────────────────────────────
+  // ── 6. Validate AI response shape ─────────────────────────────────────────
   let analysis: ContractAnalysis;
   try {
     const aiJson = JSON.parse(rawText);
     const validated = ContractAnalysisSchema.safeParse(aiJson);
-    // Use validated data if clean; fall back to raw parse if schema drifts
+    // Use validated data; fall back to raw parse if schema drifts (non-fatal)
     analysis = validated.success ? validated.data : (aiJson as ContractAnalysis);
   } catch {
-    console.error("[analyze] Failed to parse AI response:", rawText.slice(0, 300));
+    console.error("[analyze] Failed to parse AI JSON:", rawText.slice(0, 300));
     return NextResponse.json(
-      { error: "Failed to parse AI response. Please try again.", disclaimer: DISCLAIMER },
+      {
+        error: "Failed to parse AI response. Please try again.",
+        disclaimer: DISCLAIMER,
+      },
       { status: 500, headers: rlHeaders }
     );
   }
 
-  // ── Persist to Supabase ────────────────────────────────────────────────────
+  // ── 7. Persist to Supabase ─────────────────────────────────────────────────
   let analysisId = crypto.randomUUID();
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseServer
       .from("contract_redliner_analyses")
       .insert({ analysis_json: analysis, text_hash: textHash })
       .select("id")
       .single();
+
     if (!error && data) analysisId = data.id;
   } catch (err) {
-    // Non-fatal: still return the analysis even if DB write fails
+    // Non-fatal: return analysis even if DB write fails
     console.error("[analyze] Supabase write error:", err);
   }
 

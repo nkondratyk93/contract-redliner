@@ -15,7 +15,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseServer } from "@/lib/supabase-server";
 
 const DISCLAIMER =
   "This analysis is for informational purposes only and does not constitute legal advice. " +
@@ -39,7 +39,7 @@ export async function GET(
   }
 
   try {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseServer
       .from("contract_redliner_analyses")
       .select("id, analysis_json, text_hash, created_at")
       .eq("id", id)

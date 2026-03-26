@@ -4,17 +4,22 @@
  */
 
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export async function GET(): Promise<NextResponse> {
   const checks: Record<string, "ok" | "error" | "missing"> = {
     server: "ok",
     database: "error",
-    anthropic_key: process.env.ANTHROPIC_API_KEY ? "ok" : "missing",
+    anthropic_key:
+      process.env.ANTHROPIC_API_KEY &&
+      process.env.ANTHROPIC_API_KEY !== "placeholder"
+        ? "ok"
+        : "missing",
+    supabase_service_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? "ok" : "missing",
   };
 
   try {
-    const { error } = await supabase
+    const { error } = await supabaseServer
       .from("contract_redliner_analyses")
       .select("id")
       .limit(1);
