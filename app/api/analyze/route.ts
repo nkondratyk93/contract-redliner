@@ -186,11 +186,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const plan = (profileData?.plan ?? "free") as Plan;
       rl = await checkUserRateLimit(user.id, plan, supabaseServer as unknown as Parameters<typeof checkUserRateLimit>[2]);
     } else {
-      rl = checkRateLimit(ip);
+      rl = await checkRateLimit(ip);
     }
   } else {
-    // Anonymous: in-memory IP-based limit
-    rl = checkRateLimit(ip);
+    // Anonymous: Supabase-backed IP-based limit
+    rl = await checkRateLimit(ip);
   }
 
   const rlHeaders: Record<string, string> = {
