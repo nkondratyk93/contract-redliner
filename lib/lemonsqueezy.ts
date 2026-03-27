@@ -20,6 +20,18 @@ export const VARIANTS: Record<"starter" | "pro", string> = {
   pro:     process.env.LEMONSQUEEZY_VARIANT_PRO     ?? "", // $49/mo
 };
 
-export type Plan = "starter" | "pro";
+export type Plan = "free" | "starter" | "pro";
+
+export const PLAN_LIMITS: Record<Plan, number | null> = {
+  free:    3,    // 3 analyses / 24 h (in-memory IP rate limit)
+  starter: 10,   // 10 analyses / calendar month
+  pro:     null, // unlimited
+};
+
+export const PLAN_LABELS: Record<Plan, string> = {
+  free:    "Free",
+  starter: "Starter ($19/mo)",
+  pro:     "Pro ($49/mo)",
+};
 
 export const LEMONSQUEEZY_BASE_URL = "https://api.lemonsqueezy.com/v1";

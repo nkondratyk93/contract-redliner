@@ -46,7 +46,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const { plan, email, successUrl, cancelUrl } = parsed.data;
-  const variantId = VARIANTS[plan as Plan];
+  const variantId = VARIANTS[plan as "starter" | "pro"];
 
   if (!variantId) {
     return NextResponse.json(
