@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /api/
 
-Sitemap: https://contractredliner.kolya.app/sitemap.xml
+Sitemap: https://mvp-contract-redliner.vercel.app/sitemap.xml
