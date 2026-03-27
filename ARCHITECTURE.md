@@ -159,7 +159,56 @@ All tables: users can only SELECT/INSERT/UPDATE/DELETE their own rows (`auth.uid
 
 ---
 
-## 5. Infrastructure
+## 5. Payments (LemonSqueezy)
+
+**Payment processor:** [LemonSqueezy](https://www.lemonsqueezy.com) — handles checkout, subscriptions, VAT/tax, and refunds globally.
+
+### Why LemonSqueezy
+- **Merchant of record:** LemonSqueezy collects and remits VAT/sales tax in every jurisdiction automatically — no manual tax configuration needed (major advantage over Stripe for global SaaS)
+- **Redirect-based checkout:** No embedded JS or iframes — user redirects to a hosted checkout page, then returns to the app after payment
+- **Built-in subscription management:** Handles upgrades, downgrades, renewals, and cancellations
+
+### Checkout Flow
+```
+User clicks "Upgrade" → /api/payments/checkout
+  → Create LemonSqueezy checkout URL (via API)
+  → Redirect user to LemonSqueezy hosted checkout
+  → User completes payment on LemonSqueezy
+  → LemonSqueezy redirects to /payment/success?subscription_id=...
+  → Webhook fires to /api/webhooks/lemonsqueezy
+  → DB updated: profiles.plan = 'pro'
+```
+
+### API Endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `POST` | `/api/payments/checkout` | Required | Create LemonSqueezy checkout URL, redirect user |
+| `POST` | `/api/webhooks/lemonsqueezy` | Webhook secret | Handle LemonSqueezy webhook events |
+| `GET` | `/api/payments/portal` | Required | Redirect to LemonSqueezy customer portal (manage subscription) |
+
+### Webhook Events
+
+| Event | Action |
+|-------|--------|
+| `order_created` | One-time purchase: update plan, log to DB |
+| `subscription_created` | New subscription: set `profiles.plan = 'pro'`, store `subscription_id` |
+| `subscription_updated` | Plan change or renewal: sync plan status |
+| `subscription_cancelled` | Cancellation: downgrade to free at period end |
+
+**Webhook verification:** All incoming webhooks validated using HMAC-SHA256 signature against `LEMONSQUEEZY_WEBHOOK_SECRET`.
+
+### Subscription Plans
+
+| Tier | LemonSqueezy Variant | Price | Limits |
+|------|---------------------|-------|--------|
+| Free | — | $0 | 1 analysis/month |
+| Starter | `LEMONSQUEEZY_VARIANT_STARTER` | $19/mo | 10 analyses/month |
+| Pro | `LEMONSQUEEZY_VARIANT_PRO` | $49/mo | Unlimited analyses + rewrite suggestions |
+
+---
+
+## 5a. Infrastructure
 - **Frontend:** Vercel (Next.js) — ✅ Done
 - **Backend:** Vercel Serverless Functions (same project or separate)
 - **Storage:** Supabase Storage, private bucket "contracts", signed URLs with 1h expiry
@@ -172,7 +221,27 @@ All tables: users can only SELECT/INSERT/UPDATE/DELETE their own rows (`auth.uid
 
 ---
 
-## 6. Legal Disclaimers (CRITICAL)
+## 6. Environment Variables
+
+All secrets stored in Vercel environment variables. Never commit to repo.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Supabase public anon key |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | Supabase service role (server-side only) |
+| `ANTHROPIC_API_KEY` | ✅ | API key for Claude (AI pipeline) |
+| `LEMONSQUEEZY_API_KEY` | ✅ | LemonSqueezy API key (server-side only) |
+| `LEMONSQUEEZY_STORE_ID` | ✅ | LemonSqueezy store ID |
+| `LEMONSQUEEZY_VARIANT_STARTER` | ✅ | Variant ID for Starter plan ($19/mo) |
+| `LEMONSQUEEZY_VARIANT_PRO` | ✅ | Variant ID for Pro plan ($49/mo) |
+| `LEMONSQUEEZY_WEBHOOK_SECRET` | ✅ | HMAC secret for webhook signature verification |
+
+> ⚠️ `LEMONSQUEEZY_API_KEY` and `LEMONSQUEEZY_WEBHOOK_SECRET` must be set as **server-only** (no `NEXT_PUBLIC_` prefix).
+
+---
+
+## 7. Legal Disclaimers (CRITICAL)
 
 ### UX Integration Points
 1. **Upload page:** Banner — "Contract Redliner provides AI-assisted analysis, not legal advice. Always consult a qualified attorney for legal decisions."
@@ -190,7 +259,7 @@ All tables: users can only SELECT/INSERT/UPDATE/DELETE their own rows (`auth.uid
 
 ---
 
-## 7. Security
+## 8. Security
 
 ### Contract Data
 - Encrypted at rest (Supabase default: AES-256)
@@ -206,7 +275,7 @@ All tables: users can only SELECT/INSERT/UPDATE/DELETE their own rows (`auth.uid
 
 ---
 
-## 8. MVP Scope Boundaries
+## 9. MVP Scope Boundaries
 
 ### ✅ IN
 - PDF and DOCX upload
