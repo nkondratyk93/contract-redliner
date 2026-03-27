@@ -83,6 +83,12 @@ export default function HomePage() {
           </Link>
           <nav className="flex items-center gap-4">
             <Link
+              href="/blog"
+              className="text-sm text-gray-600 hover:text-gray-900"
+            >
+              Blog
+            </Link>
+            <Link
               href="/analyze"
               className="text-sm text-gray-600 hover:text-gray-900"
             >
