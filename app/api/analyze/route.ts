@@ -247,7 +247,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     const message = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251101",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 4096,
       messages: [
         {
@@ -271,7 +271,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 6. Parse + apply architecture risk scoring algorithm ───────────────────
   let analysis: ContractAnalysis;
   try {
-    const aiJson = JSON.parse(rawText);
+    // Strip markdown code fences if the model wraps JSON in ```json ... ```
+    const cleanText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    const aiJson = JSON.parse(cleanText);
     const validated = ContractAnalysisSchema.safeParse(aiJson);
     const base = validated.success ? validated.data : (aiJson as ContractAnalysis);
 
