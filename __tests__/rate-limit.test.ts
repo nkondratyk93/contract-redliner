@@ -1,76 +1,167 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// Isolate the module between tests so the Map store resets
-let checkRateLimit: (ip: string) => { allowed: boolean; remaining: number; resetAt: number };
+// Mock supabaseServer before any imports
+vi.mock("@/lib/supabase-server", () => ({
+  supabaseServer: {
+    from: vi.fn(),
+  },
+}));
+
+// Mock lemonsqueezy so lemonSqueezySetup doesn't throw
+vi.mock("@lemonsqueezy/lemonsqueezy.js", () => ({
+  lemonSqueezySetup: vi.fn(),
+  createCheckout: vi.fn(),
+}));
+
+import { supabaseServer } from "@/lib/supabase-server";
+
+let checkRateLimit: (ip: string) => Promise<{ allowed: boolean; remaining: number; resetAt: number }>;
 let getClientIp: (request: Request) => string;
+
+/**
+ * Build a mock Supabase chain for the anon_rate_limits table.
+ * selectResult: the row returned from .single() (null with error = no row / miss)
+ */
+function mockRateLimitDb(
+  selectResult: { data: { count: number; window_start: string } | null; error: unknown }
+) {
+  const single = vi.fn().mockResolvedValue(selectResult);
+  const eqSelect = vi.fn().mockReturnValue({ single });
+  const select = vi.fn().mockReturnValue({ eq: eqSelect });
+
+  const eqUpdate = vi.fn().mockResolvedValue({ error: null });
+  const update = vi.fn().mockReturnValue({ eq: eqUpdate });
+
+  const upsert = vi.fn().mockResolvedValue({ error: null });
+
+  (supabaseServer.from as ReturnType<typeof vi.fn>).mockReturnValue({
+    select,
+    update,
+    upsert,
+  });
+
+  return { single, select, update, upsert, eqUpdate };
+}
 
 beforeEach(async () => {
   vi.resetModules();
+  vi.clearAllMocks();
+
+  // Re-mock after resetModules
+  vi.mock("@/lib/supabase-server", () => ({
+    supabaseServer: { from: vi.fn() },
+  }));
+  vi.mock("@lemonsqueezy/lemonsqueezy.js", () => ({
+    lemonSqueezySetup: vi.fn(),
+    createCheckout: vi.fn(),
+  }));
+
   const mod = await import("../lib/rate-limit");
   checkRateLimit = mod.checkRateLimit;
   getClientIp = mod.getClientIp;
 });
 
 describe("checkRateLimit", () => {
-  it("allows first 3 requests from a new IP", () => {
-    const r1 = checkRateLimit("1.2.3.4");
+  it("allows first request from a new IP (no existing record)", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
+
+    const single = vi.fn().mockResolvedValue({ data: null, error: "PGRST116" });
+    const eqSelect = vi.fn().mockReturnValue({ single });
+    const select = vi.fn().mockReturnValue({ eq: eqSelect });
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    (sb.from as ReturnType<typeof vi.fn>).mockReturnValue({ select, upsert });
+
+    const r1 = await checkRateLimit("1.2.3.4");
     expect(r1.allowed).toBe(true);
     expect(r1.remaining).toBe(2);
-
-    const r2 = checkRateLimit("1.2.3.4");
-    expect(r2.allowed).toBe(true);
-    expect(r2.remaining).toBe(1);
-
-    const r3 = checkRateLimit("1.2.3.4");
-    expect(r3.allowed).toBe(true);
-    expect(r3.remaining).toBe(0);
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ ip_hash: expect.any(String), count: 1 }),
+      expect.objectContaining({ onConflict: "ip_hash" })
+    );
   });
 
-  it("blocks 4th request from same IP", () => {
-    checkRateLimit("2.3.4.5");
-    checkRateLimit("2.3.4.5");
-    checkRateLimit("2.3.4.5");
-    const r4 = checkRateLimit("2.3.4.5");
-    expect(r4.allowed).toBe(false);
-    expect(r4.remaining).toBe(0);
-  });
-
-  it("different IPs have independent rate limit windows", () => {
-    checkRateLimit("10.0.0.1");
-    checkRateLimit("10.0.0.1");
-    checkRateLimit("10.0.0.1");
-    // 10.0.0.1 is blocked
-
-    const r = checkRateLimit("10.0.0.2");
-    expect(r.allowed).toBe(true);
-    expect(r.remaining).toBe(2);
-  });
-
-  it("resets window after 24h", () => {
+  it("blocks request when count >= FREE_LIMIT (3)", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
     const now = Date.now();
-    vi.setSystemTime(now);
 
-    checkRateLimit("3.4.5.6");
-    checkRateLimit("3.4.5.6");
-    checkRateLimit("3.4.5.6");
-    expect(checkRateLimit("3.4.5.6").allowed).toBe(false);
+    const single = vi.fn().mockResolvedValue({
+      data: { count: 3, window_start: new Date(now - 1000).toISOString() },
+      error: null,
+    });
+    const eqSelect = vi.fn().mockReturnValue({ single });
+    const select = vi.fn().mockReturnValue({ eq: eqSelect });
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    (sb.from as ReturnType<typeof vi.fn>).mockReturnValue({ select, upsert });
 
-    // Advance 25 hours
-    vi.setSystemTime(now + 25 * 60 * 60 * 1000);
-    const after = checkRateLimit("3.4.5.6");
-    expect(after.allowed).toBe(true);
-    expect(after.remaining).toBe(2);
-
-    vi.useRealTimers();
+    const r = await checkRateLimit("2.3.4.5");
+    expect(r.allowed).toBe(false);
+    expect(r.remaining).toBe(0);
   });
 
-  it("resetAt is approximately 24h from window start", () => {
+  it("allows request when count < FREE_LIMIT (2) and increments", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
+    const now = Date.now();
+
+    const single = vi.fn().mockResolvedValue({
+      data: { count: 2, window_start: new Date(now - 1000).toISOString() },
+      error: null,
+    });
+    const eqSelect = vi.fn().mockReturnValue({ single });
+    const select = vi.fn().mockReturnValue({ eq: eqSelect });
+    const eqUpdate = vi.fn().mockResolvedValue({ error: null });
+    const update = vi.fn().mockReturnValue({ eq: eqUpdate });
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    (sb.from as ReturnType<typeof vi.fn>).mockReturnValue({ select, update, upsert });
+
+    const r = await checkRateLimit("3.4.5.6");
+    expect(r.allowed).toBe(true);
+    expect(r.remaining).toBe(0); // 3 - 3 = 0
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ count: 3 }));
+  });
+
+  it("resets window when window_start is older than 24h", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
+    const now = Date.now();
+
+    const single = vi.fn().mockResolvedValue({
+      data: { count: 3, window_start: new Date(now - 25 * 60 * 60 * 1000).toISOString() },
+      error: null,
+    });
+    const eqSelect = vi.fn().mockReturnValue({ single });
+    const select = vi.fn().mockReturnValue({ eq: eqSelect });
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    (sb.from as ReturnType<typeof vi.fn>).mockReturnValue({ select, upsert });
+
+    const r = await checkRateLimit("4.5.6.7");
+    expect(r.allowed).toBe(true);
+    expect(r.remaining).toBe(2); // reset to count=1, remaining=2
+  });
+
+  it("resetAt is approximately 24h from now for new IP", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
+
+    const single = vi.fn().mockResolvedValue({ data: null, error: "PGRST116" });
+    const eqSelect = vi.fn().mockReturnValue({ single });
+    const select = vi.fn().mockReturnValue({ eq: eqSelect });
+    const upsert = vi.fn().mockResolvedValue({ error: null });
+    (sb.from as ReturnType<typeof vi.fn>).mockReturnValue({ select, upsert });
+
     const before = Date.now();
-    const result = checkRateLimit("4.5.6.7");
+    const result = await checkRateLimit("5.6.7.8");
     const after = Date.now();
     const expected24h = 24 * 60 * 60 * 1000;
     expect(result.resetAt).toBeGreaterThanOrEqual(before + expected24h);
     expect(result.resetAt).toBeLessThanOrEqual(after + expected24h + 100);
+  });
+
+  it("fails open when Supabase throws (allows request)", async () => {
+    const { supabaseServer: sb } = await import("@/lib/supabase-server");
+    (sb.from as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error("Supabase down");
+    });
+
+    const r = await checkRateLimit("6.7.8.9");
+    expect(r.allowed).toBe(true);
   });
 });
 

@@ -58,7 +58,20 @@ async function checkAnthropicKey(): Promise<CheckStatus> {
   return status;
 }
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request): Promise<NextResponse> {
+  // Internal-only: if HEALTH_CHECK_TOKEN is set, require it in Authorization header
+  const healthToken = process.env.HEALTH_CHECK_TOKEN;
+  if (healthToken) {
+    const authHeader = request.headers.get("authorization") ?? "";
+    const provided = authHeader.replace("Bearer ", "").trim();
+    if (!provided || provided !== healthToken) {
+      return NextResponse.json(
+        { error: "Unauthorized. Provide a valid health check token." },
+        { status: 401 }
+      );
+    }
+  }
+
   const [dbResult, anthropicKeyStatus] = await Promise.allSettled([
     supabaseServer.from("contract_redliner_analyses").select("id").limit(1),
     checkAnthropicKey(),
@@ -67,9 +80,8 @@ export async function GET(): Promise<NextResponse> {
   const dbOk =
     dbResult.status === "fulfilled" && !dbResult.value.error;
 
-  const stripeKey = process.env.STRIPE_SECRET_KEY;
-  const stripeKeyStatus: CheckStatus =
-    stripeKey && stripeKey !== "sk_test_placeholder" ? "ok" : "missing";
+  const lsApiKey = process.env.LEMONSQUEEZY_API_KEY;
+  const lsKeyStatus: CheckStatus = lsApiKey ? "ok" : "missing";
 
   const checks: Record<string, CheckStatus> = {
     server: "ok",
@@ -79,7 +91,7 @@ export async function GET(): Promise<NextResponse> {
         ? anthropicKeyStatus.value
         : "error",
     supabase_service_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? "ok" : "missing",
-    stripe_key: stripeKeyStatus,
+    lemonsqueezy_key: lsKeyStatus,
   };
 
   const healthy = Object.values(checks).every((v) => v === "ok");

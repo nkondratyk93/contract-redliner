@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PLAN_LIMITS, PLAN_LABELS } from "../lib/stripe";
+import { PLAN_LIMITS, PLAN_LABELS } from "../lib/lemonsqueezy";
 import { calculateRiskScore } from "../lib/risk-scoring";
 
 describe("PLAN_LIMITS", () => {
@@ -24,7 +24,7 @@ describe("PLAN_LABELS", () => {
   });
 });
 
-// Risk scoring integration with Stripe plans (business logic)
+// Risk scoring integration with plans (business logic)
 describe("risk score — pricing page display values", () => {
   it("a HIGH-risk IP clause contract scores ≥70 (shows red badge)", () => {
     const result = calculateRiskScore([{ type: "ip_ownership", risk: "HIGH" }]);

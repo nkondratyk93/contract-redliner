@@ -29,7 +29,7 @@ import { supabaseServer } from "@/lib/supabase-server";
 import { AnalyzeBodySchema, ContractAnalysisSchema } from "@/lib/schemas";
 import type { ContractAnalysis } from "@/lib/schemas";
 import { checkRateLimit, checkUserRateLimit, getClientIp } from "@/lib/rate-limit";
-import type { Plan } from "@/lib/stripe";
+import type { Plan } from "@/lib/lemonsqueezy";
 import { extractText, detectFileType } from "@/lib/document-parser";
 import { calculateRiskScore, normalizeClauseType } from "@/lib/risk-scoring";
 import crypto from "crypto";
@@ -186,11 +186,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const plan = (profileData?.plan ?? "free") as Plan;
       rl = await checkUserRateLimit(user.id, plan, supabaseServer as unknown as Parameters<typeof checkUserRateLimit>[2]);
     } else {
-      rl = checkRateLimit(ip);
+      rl = await checkRateLimit(ip);
     }
   } else {
-    // Anonymous: in-memory IP-based limit
-    rl = checkRateLimit(ip);
+    // Anonymous: Supabase-backed IP-based limit
+    rl = await checkRateLimit(ip);
   }
 
   const rlHeaders: Record<string, string> = {

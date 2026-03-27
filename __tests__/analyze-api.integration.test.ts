@@ -40,6 +40,12 @@ vi.mock("pdf-parse", () => ({
   default: vi.fn().mockResolvedValue({ text: "Mocked PDF contract text. ".repeat(5) }),
 }));
 
+// Mock lemonsqueezy so lemonSqueezySetup doesn't throw during import
+vi.mock("@lemonsqueezy/lemonsqueezy.js", () => ({
+  lemonSqueezySetup: vi.fn(),
+  createCheckout: vi.fn(),
+}));
+
 // ── Imports (after mocks) ────────────────────────────────────────────────────
 
 import { POST } from "@/app/api/analyze/route";
@@ -88,18 +94,102 @@ const VALID_AI_RESPONSE = JSON.stringify({
 });
 
 /**
- * Build a mock Supabase chain that returns the given result for .single()
+ * Build a mock supabaseServer.from that handles both:
+ * - contract_redliner_anon_rate_limits (rate-limit table): always "miss", upsert/update no-op
+ * - all other tables (analyses): cache miss + successful insert
  */
-function mockSupabaseChain(result: { data: unknown; error: unknown }) {
-  const single = vi.fn().mockResolvedValue(result);
-  const limit = vi.fn().mockReturnValue({ single });
-  const eq = vi.fn().mockReturnValue({ single, limit });
-  const select = vi.fn().mockReturnValue({ eq, single });
-  const insert = vi.fn().mockReturnValue({ select });
-  return {
-    from: vi.fn().mockReturnValue({ select, insert }),
-    _fns: { single, limit, eq, select, insert },
-  };
+function buildStandardFromMock(insertId = "test-uuid-1234") {
+  return vi.fn().mockImplementation((table: string) => {
+    if (table === "contract_redliner_anon_rate_limits") {
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            // Use single() — rate-limit.ts uses .single() and treats error as "miss"
+            single: vi.fn().mockResolvedValue({ data: null, error: "PGRST116" }),
+          }),
+        }),
+        upsert: vi.fn().mockResolvedValue({ error: null }),
+        update: vi.fn().mockReturnValue({
+          eq: vi.fn().mockResolvedValue({ error: null }),
+        }),
+      };
+    }
+    // analyses table and others
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+          limit: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+          }),
+        }),
+      }),
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: { id: insertId }, error: null }),
+        }),
+      }),
+      upsert: vi.fn().mockResolvedValue({ error: null }),
+    };
+  });
+}
+
+/**
+ * Build a stateful supabaseServer.from mock that tracks anon rate-limit counts per IP hash.
+ * Each call to this function starts with a fresh state Map.
+ */
+function buildStatefulRateLimitFromMock(insertId = "rl-uuid") {
+  const rlState = new Map<string, { count: number; window_start: string }>();
+
+  return vi.fn().mockImplementation((table: string) => {
+    if (table === "contract_redliner_anon_rate_limits") {
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockImplementation((_col: string, ipHash: string) => ({
+            single: vi.fn().mockImplementation(() => {
+              const rec = rlState.get(ipHash);
+              return Promise.resolve(
+                rec ? { data: rec, error: null } : { data: null, error: "miss" }
+              );
+            }),
+          })),
+        }),
+        upsert: vi.fn().mockImplementation(
+          (payload: { ip_hash: string; count: number; window_start: string }) => {
+            rlState.set(payload.ip_hash, {
+              count: payload.count,
+              window_start: payload.window_start,
+            });
+            return Promise.resolve({ error: null });
+          }
+        ),
+        update: vi.fn().mockImplementation((patch: { count: number }) => ({
+          eq: vi.fn().mockImplementation((_col: string, ipHash: string) => {
+            const rec = rlState.get(ipHash);
+            if (rec) rec.count = patch.count;
+            return Promise.resolve({ error: null });
+          }),
+        })),
+      };
+    }
+    // analyses table
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+          limit: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+          }),
+        }),
+      }),
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: { id: insertId }, error: null }),
+        }),
+      }),
+      upsert: vi.fn().mockResolvedValue({ error: null }),
+    };
+  });
 }
 
 /**
@@ -123,20 +213,7 @@ function postText(text: string, ip = "10.0.0.1", filename?: string) {
 /** Standard supabase mock: cache miss → successful insert */
 function setupHappyPathMocks() {
   (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(
-    (_table: string) => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "test-uuid-1234" }, error: null }),
-        }),
-      }),
-    })
+    buildStandardFromMock("test-uuid-1234")
   );
   (anthropic.messages.create as ReturnType<typeof vi.fn>).mockResolvedValue({
     content: [{ type: "text", text: VALID_AI_RESPONSE }],
@@ -211,20 +288,9 @@ describe("POST /api/analyze — happy path: JSON text input", () => {
 
 describe("POST /api/analyze — PDF file upload", () => {
   beforeEach(() => {
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "pdf-uuid-5678" }, error: null }),
-        }),
-      }),
-    }));
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(
+      buildStandardFromMock("pdf-uuid-5678")
+    );
 
     (anthropic.messages.create as ReturnType<typeof vi.fn>).mockResolvedValue({
       content: [{ type: "text", text: JSON.stringify({
@@ -345,21 +411,9 @@ describe("POST /api/analyze — rate limiting (free tier: 3/IP/24h)", () => {
   const RATE_IP = "192.168.42.42";
 
   beforeEach(() => {
-    vi.resetModules();
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "rl-uuid" }, error: null }),
-        }),
-      }),
-    }));
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(
+      buildStatefulRateLimitFromMock()
+    );
 
     (anthropic.messages.create as ReturnType<typeof vi.fn>).mockResolvedValue({
       content: [{ type: "text", text: JSON.stringify({
@@ -406,20 +460,6 @@ describe("POST /api/analyze — rate limiting (free tier: 3/IP/24h)", () => {
       expect(res.status).toBe(400);
     }
     // After 5 bad requests, valid request should still be allowed (not rate-limited)
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "ok-uuid" }, error: null }),
-        }),
-      }),
-    }));
     const validRes = await postText(VALID_CONTRACT, "192.168.42.50");
     expect(validRes.status).toBe(200);
     const remaining = Number(validRes.headers.get("X-RateLimit-Remaining"));
@@ -429,20 +469,9 @@ describe("POST /api/analyze — rate limiting (free tier: 3/IP/24h)", () => {
 
 describe("POST /api/analyze — AI service error states", () => {
   beforeEach(() => {
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "err-uuid" }, error: null }),
-        }),
-      }),
-    }));
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(
+      buildStandardFromMock("err-uuid")
+    );
   });
 
   it("returns 503 when Anthropic SDK throws", async () => {
@@ -473,21 +502,36 @@ describe("POST /api/analyze — AI service error states", () => {
       content: [{ type: "text", text: VALID_AI_RESPONSE }],
       usage: { input_tokens: 500, output_tokens: 300 },
     });
-    // Override Supabase insert to fail
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
+    // Override Supabase to allow rate-limit but fail insert
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation((table: string) => {
+      if (table === "contract_redliner_anon_rate_limits") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+            }),
+          }),
+          upsert: vi.fn().mockResolvedValue({ error: null }),
+          update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+        };
+      }
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
             single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+            limit: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+            }),
           }),
         }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: null, error: { message: "DB error" } }),
+        insert: vi.fn().mockReturnValue({
+          select: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: null, error: { message: "DB error" } }),
+          }),
         }),
-      }),
-    }));
+        upsert: vi.fn().mockResolvedValue({ error: null }),
+      };
+    });
     const res = await postText(VALID_CONTRACT, "30.0.0.3");
     // Should still return 200 — Supabase write is non-fatal
     expect(res.status).toBe(200);
@@ -501,18 +545,32 @@ describe("POST /api/analyze — dedup cache (same text hash → cached=true)", (
   it("returns cached=true and skips Anthropic when same text was analyzed before", async () => {
     const cachedAnalysis = JSON.parse(VALID_AI_RESPONSE);
 
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({
-              data: { id: "cached-uuid", analysis_json: cachedAnalysis },
-              error: null,
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation((table: string) => {
+      if (table === "contract_redliner_anon_rate_limits") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
+            }),
+          }),
+          upsert: vi.fn().mockResolvedValue({ error: null }),
+          update: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) }),
+        };
+      }
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({
+                data: { id: "cached-uuid", analysis_json: cachedAnalysis },
+                error: null,
+              }),
             }),
           }),
         }),
-      }),
-    }));
+        upsert: vi.fn().mockResolvedValue({ error: null }),
+      };
+    });
 
     (anthropic.messages.create as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error("Anthropic should NOT be called when cache hits");
@@ -529,20 +587,9 @@ describe("POST /api/analyze — dedup cache (same text hash → cached=true)", (
 
 describe("POST /api/analyze — low-risk contract (empty flaggedClauses)", () => {
   it("handles contract with no flagged clauses gracefully", async () => {
-    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(() => ({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          limit: vi.fn().mockReturnValue({
-            single: vi.fn().mockResolvedValue({ data: null, error: "miss" }),
-          }),
-        }),
-      }),
-      insert: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: { id: "low-risk-uuid" }, error: null }),
-        }),
-      }),
-    }));
+    (supabaseServer.from as ReturnType<typeof vi.fn>).mockImplementation(
+      buildStandardFromMock("low-risk-uuid")
+    );
 
     (anthropic.messages.create as ReturnType<typeof vi.fn>).mockResolvedValue({
       content: [{ type: "text", text: JSON.stringify({

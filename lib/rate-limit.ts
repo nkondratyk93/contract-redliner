@@ -1,26 +1,22 @@
 /**
  * Tier-aware rate limiter.
  *
- * Free (anonymous): 3 analyses / IP / 24 hours (in-memory)
+ * Free (anonymous): 3 analyses / IP / 24 hours — Supabase-backed (survives cold starts)
  * Starter ($19/mo): 10 analyses / calendar month (Supabase-backed)
  * Pro ($49/mo):     unlimited
  *
+ * IPs are hashed with SHA-256 before storage (privacy by design — raw IPs never stored).
  * Rate limit is ONLY consumed after successful input validation —
  * bad requests never burn a slot.
  */
 
-import type { Plan } from "@/lib/stripe";
-import { PLAN_LIMITS } from "@/lib/stripe";
+import crypto from "crypto";
+import { supabaseServer } from "@/lib/supabase-server";
+import type { Plan } from "@/lib/lemonsqueezy";
+import { PLAN_LIMITS } from "@/lib/lemonsqueezy";
 
-// ── Free tier: in-memory, per-IP ──────────────────────────────────────────────
 const FREE_LIMIT = 3;
 const FREE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-interface IpEntry {
-  count: number;
-  windowStart: number;
-}
-const ipStore = new Map<string, IpEntry>();
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -29,40 +25,94 @@ export interface RateLimitResult {
   plan: Plan;
 }
 
-/**
- * Check rate limit for an anonymous (unauthenticated) IP.
- * Mutates the in-memory store — call only after input validation passes.
- */
-export function checkAnonRateLimit(ip: string): RateLimitResult {
-  const now = Date.now();
-  const entry = ipStore.get(ip);
-
-  if (!entry || now - entry.windowStart > FREE_WINDOW_MS) {
-    ipStore.set(ip, { count: 1, windowStart: now });
-    return { allowed: true, remaining: FREE_LIMIT - 1, resetAt: now + FREE_WINDOW_MS, plan: "free" };
-  }
-
-  if (entry.count >= FREE_LIMIT) {
-    return { allowed: false, remaining: 0, resetAt: entry.windowStart + FREE_WINDOW_MS, plan: "free" };
-  }
-
-  entry.count++;
-  return {
-    allowed: true,
-    remaining: FREE_LIMIT - entry.count,
-    resetAt: entry.windowStart + FREE_WINDOW_MS,
-    plan: "free",
-  };
+function hashIp(ip: string): string {
+  // Salt prevents rainbow-table lookup of known IPs
+  return crypto
+    .createHash("sha256")
+    .update(ip + (process.env.IP_HASH_SALT ?? ""))
+    .digest("hex");
 }
 
 /**
- * Check rate limit for an authenticated user.
- * Reads/updates Supabase profile — call only after input validation passes.
+ * Check + consume rate limit for an anonymous (unauthenticated) IP.
+ * Supabase-backed: survives Vercel cold starts.
+ * Call only after input validation passes.
+ */
+export async function checkAnonRateLimit(ip: string): Promise<RateLimitResult> {
+  const ipHash = hashIp(ip);
+  const now = Date.now();
+
+  try {
+    // Fetch existing record for this IP hash
+    // Use .single() — if no row exists, Supabase returns an error which we treat as a miss
+    const { data: existing, error: fetchError } = await supabaseServer
+      .from("contract_redliner_anon_rate_limits")
+      .select("count, window_start")
+      .eq("ip_hash", ipHash)
+      .single();
+
+    const windowExpired =
+      fetchError ||
+      !existing ||
+      new Date(existing.window_start as string).getTime() < now - FREE_WINDOW_MS;
+
+    if (windowExpired) {
+      // No record or window expired — create/reset with count=1
+      await supabaseServer
+        .from("contract_redliner_anon_rate_limits")
+        .upsert(
+          {
+            ip_hash: ipHash,
+            count: 1,
+            window_start: new Date(now).toISOString(),
+            updated_at: new Date(now).toISOString(),
+          },
+          { onConflict: "ip_hash" }
+        );
+
+      return {
+        allowed: true,
+        remaining: FREE_LIMIT - 1,
+        resetAt: now + FREE_WINDOW_MS,
+        plan: "free",
+      };
+    }
+
+    const windowStart = new Date(existing.window_start as string).getTime();
+    const resetAt = windowStart + FREE_WINDOW_MS;
+    const count = existing.count as number;
+
+    if (count >= FREE_LIMIT) {
+      return { allowed: false, remaining: 0, resetAt, plan: "free" };
+    }
+
+    // Increment usage
+    const newCount = count + 1;
+    await supabaseServer
+      .from("contract_redliner_anon_rate_limits")
+      .update({ count: newCount, updated_at: new Date(now).toISOString() })
+      .eq("ip_hash", ipHash);
+
+    return {
+      allowed: true,
+      remaining: FREE_LIMIT - newCount,
+      resetAt,
+      plan: "free",
+    };
+  } catch (err) {
+    // Fail open: if Supabase is down, allow the request
+    // (better UX than blocking everyone during a DB outage)
+    console.error("[rate-limit] Supabase error — failing open:", (err as Error).message);
+    return { allowed: true, remaining: 0, resetAt: now + FREE_WINDOW_MS, plan: "free" };
+  }
+}
+
+/**
+ * Check rate limit for an authenticated user (Starter plan: monthly quota).
  */
 export async function checkUserRateLimit(
   userId: string,
   plan: Plan,
-  // supabaseServer passed in to avoid circular imports
   supabase: {
     from: (table: string) => {
       select: (cols: string) => {
@@ -81,40 +131,41 @@ export async function checkUserRateLimit(
     return { allowed: true, remaining: null, resetAt: null, plan };
   }
 
-  // Fetch current usage
-  const { data: profile } = await (supabase
-    .from("profiles")
-    .select("analyses_this_month, analyses_reset_at") as unknown as Promise<{
-    data: { analyses_this_month: number; analyses_reset_at: string } | null;
-  }>).catch(() => ({ data: null }));
+  const { data: profile } = await (
+    supabase
+      .from("profiles")
+      .select("analyses_this_month, analyses_reset_at") as unknown as Promise<{
+      data: { analyses_this_month: number; analyses_reset_at: string } | null;
+    }>
+  ).catch(() => ({ data: null }));
 
   const now = Date.now();
   const resetAt = profile?.analyses_reset_at
     ? new Date(profile.analyses_reset_at).getTime()
     : now + 30 * 24 * 60 * 60 * 1000;
 
-  // Reset month counter if past reset date
   let used = profile?.analyses_this_month ?? 0;
   if (now >= resetAt) {
     used = 0;
-    // Reset will be persisted on the increment below
   }
 
   if (used >= limit) {
     return { allowed: false, remaining: 0, resetAt, plan };
   }
 
-  // Increment usage
   const newCount = used + 1;
-  const newResetAt = now >= resetAt
-    ? new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()
-    : undefined;
+  const newResetAt =
+    now >= resetAt
+      ? new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()
+      : undefined;
 
-  await (supabase.from("profiles").update({
-    analyses_this_month: newCount,
-    ...(newResetAt ? { analyses_reset_at: newResetAt } : {}),
-    updated_at: new Date().toISOString(),
-  }) as unknown as { eq: (col: string, val: string) => Promise<void> }).eq("id", userId);
+  await (
+    supabase.from("profiles").update({
+      analyses_this_month: newCount,
+      ...(newResetAt ? { analyses_reset_at: newResetAt } : {}),
+      updated_at: new Date().toISOString(),
+    }) as unknown as { eq: (col: string, val: string) => Promise<void> }
+  ).eq("id", userId);
 
   return {
     allowed: true,
@@ -124,9 +175,16 @@ export async function checkUserRateLimit(
   };
 }
 
-// ── Backwards compat: original checkRateLimit for anon usage ─────────────────
-export function checkRateLimit(ip: string): { allowed: boolean; remaining: number; resetAt: number; plan: Plan } {
-  const result = checkAnonRateLimit(ip);
+/**
+ * Backwards-compat async wrapper — delegates to checkAnonRateLimit.
+ */
+export async function checkRateLimit(ip: string): Promise<{
+  allowed: boolean;
+  remaining: number;
+  resetAt: number;
+  plan: Plan;
+}> {
+  const result = await checkAnonRateLimit(ip);
   return {
     allowed: result.allowed,
     remaining: result.remaining ?? 0,
