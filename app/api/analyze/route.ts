@@ -28,8 +28,9 @@ import { anthropic } from "@/lib/anthropic";
 import { supabaseServer } from "@/lib/supabase-server";
 import { AnalyzeBodySchema, ContractAnalysisSchema } from "@/lib/schemas";
 import type { ContractAnalysis } from "@/lib/schemas";
-import { checkRateLimit, checkUserRateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkRateLimit, checkUserRateLimit, getClientIp, FREE_LIMIT } from "@/lib/rate-limit";
 import type { Plan } from "@/lib/lemonsqueezy";
+import { PLAN_LIMITS } from "@/lib/lemonsqueezy";
 import { extractText, detectFileType } from "@/lib/document-parser";
 import { calculateRiskScore, normalizeClauseType } from "@/lib/risk-scoring";
 import crypto from "crypto";
@@ -194,7 +195,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const rlHeaders: Record<string, string> = {
-    "X-RateLimit-Limit": rl.remaining === null ? "unlimited" : String((rl.remaining ?? 0) + 1),
+    "X-RateLimit-Limit": rl.remaining === null ? "unlimited" : String(PLAN_LIMITS[rl.plan] ?? FREE_LIMIT),
     ...(rl.remaining !== null && { "X-RateLimit-Remaining": String(rl.remaining) }),
     ...(rl.resetAt !== null && { "X-RateLimit-Reset": String(Math.floor(rl.resetAt / 1000)) }),
   };

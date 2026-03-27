@@ -15,7 +15,7 @@ import { supabaseServer } from "@/lib/supabase-server";
 import type { Plan } from "@/lib/lemonsqueezy";
 import { PLAN_LIMITS } from "@/lib/lemonsqueezy";
 
-const FREE_LIMIT = 3;
+export const FREE_LIMIT = 3;
 const FREE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export interface RateLimitResult {
