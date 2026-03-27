@@ -28,7 +28,8 @@ import { anthropic } from "@/lib/anthropic";
 import { supabaseServer } from "@/lib/supabase-server";
 import { AnalyzeBodySchema, ContractAnalysisSchema } from "@/lib/schemas";
 import type { ContractAnalysis } from "@/lib/schemas";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkRateLimit, checkUserRateLimit, getClientIp } from "@/lib/rate-limit";
+import type { Plan } from "@/lib/stripe";
 import { extractText, detectFileType } from "@/lib/document-parser";
 import { calculateRiskScore, normalizeClauseType } from "@/lib/risk-scoring";
 import crypto from "crypto";
@@ -162,32 +163,56 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // ── 3. Rate limit — only after validation ──────────────────────────────────
-  const rl = checkRateLimit(ip);
-  const rlHeaders = {
-    "X-RateLimit-Limit": "3",
-    "X-RateLimit-Remaining": String(rl.remaining),
-    "X-RateLimit-Reset": String(Math.floor(rl.resetAt / 1000)),
+  // ── 3. Rate limit — tier-aware, only after validation ─────────────────────
+  const authHeader = request.headers.get("authorization") ?? "";
+  const userToken = authHeader.replace("Bearer ", "").trim();
+
+  let rl: { allowed: boolean; remaining: number | null; resetAt: number | null; plan: Plan };
+
+  if (userToken) {
+    // Authenticated: check Supabase plan-based limits
+    const { data: { user } } = await supabaseServer.auth.getUser(userToken).catch(() => ({ data: { user: null } }));
+    if (user) {
+      let profileData: { plan?: string } | null = null;
+      try {
+        const { data } = await supabaseServer
+          .from("profiles")
+          .select("plan")
+          .eq("id", user.id)
+          .single();
+        profileData = data as { plan?: string } | null;
+      } catch { /* default to free */ }
+
+      const plan = (profileData?.plan ?? "free") as Plan;
+      rl = await checkUserRateLimit(user.id, plan, supabaseServer as unknown as Parameters<typeof checkUserRateLimit>[2]);
+    } else {
+      rl = checkRateLimit(ip);
+    }
+  } else {
+    // Anonymous: in-memory IP-based limit
+    rl = checkRateLimit(ip);
+  }
+
+  const rlHeaders: Record<string, string> = {
+    "X-RateLimit-Limit": rl.remaining === null ? "unlimited" : String((rl.remaining ?? 0) + 1),
+    ...(rl.remaining !== null && { "X-RateLimit-Remaining": String(rl.remaining) }),
+    ...(rl.resetAt !== null && { "X-RateLimit-Reset": String(Math.floor(rl.resetAt / 1000)) }),
   };
 
   if (!rl.allowed) {
-    const resetDate = new Date(rl.resetAt).toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    const resetMsg = rl.resetAt
+      ? `Your limit resets at ${new Date(rl.resetAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}.`
+      : "";
+    const limitMsg = rl.plan === "starter"
+      ? `Starter plan limit reached (10 analyses per month). ${resetMsg}`
+      : `Free tier limit reached (3 analyses per 24 hours). ${resetMsg}`;
     return NextResponse.json(
-      {
-        error: `Free tier limit reached (3 analyses per 24 hours). Your limit resets at ${resetDate}.`,
-        resetAt: rl.resetAt,
-        disclaimer: DISCLAIMER,
-      },
+      { error: limitMsg, resetAt: rl.resetAt, plan: rl.plan, disclaimer: DISCLAIMER },
       {
         status: 429,
         headers: {
           ...rlHeaders,
-          "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)),
+          ...(rl.resetAt && { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) }),
         },
       }
     );
