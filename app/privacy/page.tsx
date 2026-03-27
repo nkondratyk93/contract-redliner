@@ -71,8 +71,8 @@ export default function PrivacyPage() {
           <h2>Data Retention</h2>
           <p>
             Contract text is processed in real-time and is not stored long-term.
-            Analysis results are retained for a limited period to allow you to
-            access your results. We may retain anonymized, aggregated data for
+            Analysis results are retained for 90 days, or until account
+            deletion, whichever comes first. We may retain anonymized, aggregated data for
             service improvement purposes.
           </p>
 
