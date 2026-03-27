@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Shield, MessageSquareText, Handshake, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WaitlistForm } from "@/components/WaitlistForm";
+import { CheckoutButton } from "@/components/CheckoutButton";
 
 const features = [
   {
@@ -41,6 +42,7 @@ const tiers = [
     features: ["1 contract/month", "Basic risk flags", "Overall risk score"],
     cta: "Get Started",
     highlighted: false,
+    plan: null as null | "starter" | "pro",
   },
   {
     name: "Starter",
@@ -55,6 +57,7 @@ const tiers = [
     ],
     cta: "Start Free Trial",
     highlighted: true,
+    plan: "starter" as const,
   },
   {
     name: "Pro",
@@ -69,6 +72,7 @@ const tiers = [
     ],
     cta: "Start Free Trial",
     highlighted: false,
+    plan: "pro" as const,
   },
 ];
 
@@ -204,17 +208,24 @@ export default function HomePage() {
                     ))}
                   </ul>
                   <div className="pt-6">
-                    <Link
-                      href="/analyze"
-                      className={cn(
-                        buttonVariants({
-                          variant: tier.highlighted ? "default" : "outline",
-                        }),
-                        "w-full"
-                      )}
-                    >
-                      {tier.cta}
-                    </Link>
+                    {tier.plan ? (
+                      <CheckoutButton
+                        plan={tier.plan}
+                        variant={tier.highlighted ? "default" : "outline"}
+                      >
+                        {tier.cta}
+                      </CheckoutButton>
+                    ) : (
+                      <Link
+                        href="/analyze"
+                        className={cn(
+                          buttonVariants({ variant: "outline" }),
+                          "w-full"
+                        )}
+                      >
+                        {tier.cta}
+                      </Link>
+                    )}
                   </div>
                 </CardHeader>
               </Card>
