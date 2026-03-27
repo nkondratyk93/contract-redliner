@@ -11,10 +11,11 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl =
   process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
-const serviceRoleKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ??
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? // fallback for local dev
-  "";
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+if (!serviceRoleKey) {
+  // In development, warn loudly. In production, this will cause RLS bypass to fail safely.
+  console.warn("[supabase-server] SUPABASE_SERVICE_ROLE_KEY is not set — service role client will not work correctly");
+}
 
 export const supabaseServer = createClient(supabaseUrl, serviceRoleKey, {
   auth: {

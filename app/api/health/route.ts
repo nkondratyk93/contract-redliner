@@ -58,7 +58,18 @@ async function checkAnthropicKey(): Promise<CheckStatus> {
   return status;
 }
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request): Promise<NextResponse> {
+  // Optional token-based auth: if HEALTH_CHECK_TOKEN is set, require a matching
+  // Bearer token in the Authorization header. If the env var is not set, the
+  // endpoint remains public for backwards compatibility with uptime monitors.
+  const token = process.env.HEALTH_CHECK_TOKEN;
+  if (token) {
+    const auth = request.headers.get("Authorization");
+    if (auth !== `Bearer ${token}`) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+  }
+
   const [dbResult, anthropicKeyStatus] = await Promise.allSettled([
     supabaseServer.from("contract_redliner_analyses").select("id").limit(1),
     checkAnthropicKey(),
