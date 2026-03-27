@@ -67,6 +67,10 @@ export async function GET(): Promise<NextResponse> {
   const dbOk =
     dbResult.status === "fulfilled" && !dbResult.value.error;
 
+  const stripeKey = process.env.STRIPE_SECRET_KEY;
+  const stripeKeyStatus: CheckStatus =
+    stripeKey && stripeKey !== "sk_test_placeholder" ? "ok" : "missing";
+
   const checks: Record<string, CheckStatus> = {
     server: "ok",
     database: dbOk ? "ok" : "error",
@@ -75,6 +79,7 @@ export async function GET(): Promise<NextResponse> {
         ? anthropicKeyStatus.value
         : "error",
     supabase_service_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? "ok" : "missing",
+    stripe_key: stripeKeyStatus,
   };
 
   const healthy = Object.values(checks).every((v) => v === "ok");
